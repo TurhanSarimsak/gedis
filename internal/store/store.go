@@ -22,8 +22,6 @@ var (
 // contend. Redis itself is single-threaded; this is where gedis differs.
 const numShards = 64
 
-type list struct{ items [][]byte }
-
 type entry struct {
 	value    any   // []byte, *list or map[string][]byte
 	expireAt int64 // unix milliseconds; 0 means no TTL
@@ -349,17 +347,14 @@ func (s *Store) Push(key string, left bool, values ...[]byte) (int, error) {
 		l = &list{}
 		sh.data[key] = &entry{value: l}
 	}
-	if left {
-		// LPUSH k a b c inserts one at a time, so the list reads c b a.
-		front := make([][]byte, len(values), len(values)+len(l.items))
-		for i, v := range values {
-			front[len(values)-1-i] = v
+	for _, v := range values {
+		if left {
+			l.pushFront(v) // LPUSH k a b c inserts one at a time, so the list reads c b a
+		} else {
+			l.pushBack(v)
 		}
-		l.items = append(front, l.items...)
-	} else {
-		l.items = append(l.items, values...)
 	}
-	return len(l.items), nil
+	return l.len(), nil
 }
 
 // Pop removes up to count elements from the head or tail. An emptied list is
@@ -372,21 +367,15 @@ func (s *Store) Pop(key string, left bool, count int) ([][]byte, error) {
 		return nil, err
 	}
 
-	n := len(l.items)
-	count = min(count, n)
-	out := make([][]byte, count)
-	if left {
-		copy(out, l.items[:count])
-		clear(l.items[:count]) // drop references so popped values can be collected
-		l.items = l.items[count:]
-	} else {
-		for i := range count {
-			out[i] = l.items[n-1-i]
+	out := make([][]byte, min(count, l.len()))
+	for i := range out {
+		if left {
+			out[i] = l.popFront()
+		} else {
+			out[i] = l.popBack()
 		}
-		clear(l.items[n-count:])
-		l.items = l.items[:n-count]
 	}
-	if len(l.items) == 0 {
+	if l.len() == 0 {
 		sh.remove(key)
 	}
 	return out, nil
@@ -401,7 +390,7 @@ func (s *Store) Range(key string, start, stop int64) ([][]byte, error) {
 		return nil, err
 	}
 
-	n := int64(len(l.items))
+	n := int64(l.len())
 	if start < 0 {
 		start = max(start+n, 0)
 	}
@@ -412,7 +401,11 @@ func (s *Store) Range(key string, start, stop int64) ([][]byte, error) {
 	if start > stop {
 		return [][]byte{}, nil
 	}
-	return slices.Clone(l.items[start : stop+1]), nil
+	out := make([][]byte, 0, stop-start+1)
+	for i := start; i <= stop; i++ {
+		out = append(out, l.at(int(i)))
+	}
+	return out, nil
 }
 
 func (s *Store) ListLen(key string) (int, error) {
@@ -422,7 +415,7 @@ func (s *Store) ListLen(key string) (int, error) {
 	if l == nil {
 		return 0, err
 	}
-	return len(l.items), err
+	return l.len(), err
 }
 
 // ---- Hashes ----

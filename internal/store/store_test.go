@@ -237,6 +237,48 @@ func TestConcurrentIncr(t *testing.T) {
 	}
 }
 
+// Mixes pushes and pops at both ends so the ring buffer wraps around and grows
+// many times, checking it against a plain slice model.
+func TestListRingBufferAgainstModel(t *testing.T) {
+	s, _ := newTestStore()
+	var model []string
+	for i := range 2000 {
+		v := fmt.Sprint(i)
+		switch i % 5 {
+		case 0, 1:
+			s.Push("l", true, []byte(v))
+			model = append([]string{v}, model...)
+		case 2, 3:
+			s.Push("l", false, []byte(v))
+			model = append(model, v)
+		case 4:
+			got, _ := s.Pop("l", i%2 == 0, 1)
+			var want string
+			if i%2 == 0 {
+				want, model = model[0], model[1:]
+			} else {
+				want, model = model[len(model)-1], model[:len(model)-1]
+			}
+			if join(got) != want {
+				t.Fatalf("step %d: popped %q, want %q", i, join(got), want)
+			}
+		}
+	}
+	all, _ := s.Range("l", 0, -1)
+	if join(all) != strings.Join(model, ",") {
+		t.Fatal("list contents diverged from the model")
+	}
+}
+
+// Before the ring buffer, LPUSH copied the whole list: this was O(n²).
+func BenchmarkLPushSingleKey(b *testing.B) {
+	s := New()
+	value := []byte("x")
+	for range b.N {
+		s.Push("list", true, value)
+	}
+}
+
 func BenchmarkSetGetParallel(b *testing.B) {
 	s := New()
 	value := []byte("value")
