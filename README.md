@@ -121,7 +121,16 @@ Measured on an AMD Ryzen 7 8700F with `go test -bench`:
 | `SET` over one TCP connection, pipeline depth 100 | **~1.76M ops/s** (568 ns/op) |
 | Store `SET` + `GET`, 8 goroutines in parallel | **54 ns** per pair |
 
-CI also runs the official `redis-benchmark` against gedis on every push. See the [Actions logs](https://github.com/TurhanSarimsak/gedis/actions).
+CI also runs the official `redis-benchmark` against gedis on every push (GitHub Actions runner, 50 clients, pipeline 16):
+
+| Command | Requests/s | p50 latency |
+| --- | --- | --- |
+| `SET` | 1,273,885 | 0.33 ms |
+| `GET` | 1,298,701 | 0.32 ms |
+| `INCR` | 1,219,512 | 0.34 ms |
+| `LPUSH` | 1,204,819 | 0.34 ms |
+
+> **A bug the benchmark caught.** The first version stored lists as plain slices, and `redis-benchmark` measured `LPUSH` at **1,270 req/s with 659 ms p50**. Every push to the head shifted the entire list, which made repeated pushes to one key O(n²). Replacing the slice with a growable [ring buffer](internal/store/list.go) made push/pop O(1) at both ends: **~950× faster**. The fix is checked by a model-based test that grows and wraps the buffer.
 
 ## Running
 
