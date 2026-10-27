@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+      - name: Fuzz the RESP parser
+        run: go test ./internal/resp -run '^$' -fuzz FuzzReadCommand -fuzztime 30s
+
+  redis-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: sudo apt-get update && sudo apt-get install -y redis-tools
+      - name: Start gedis
+        run: |
+          go build -o gedis ./cmd/gedis
+          ./gedis -addr 127.0.0.1:6380 &
+          for i in $(seq 1 20); do redis-cli -p 6380 PING && break; sleep 0.2; done
+      - name: redis-cli smoke test
+        run: |
+          set -e
+          cli() { redis-cli -p 6380 "$@"; }
+          test "$(cli SET greeting hello)" = "OK"
+          test "$(cli GET greeting)" = "hello"
+          test "$(cli INCRBY counter 41)" = "41"
+          test "$(cli INCR counter)" = "42"
+          test "$(cli RPUSH list a b c)" = "3"
+          test "$(cli LRANGE list 0 -1 | tr '\n' ' ')" = "a b c "
+          test "$(cli SET temp x EX 100)" = "OK"
+          test "$(cli TTL temp)" = "100"
+          echo "redis-cli: all checks passed"
+      - name: redis-benchmark
+        run: redis-benchmark -p 6380 -t set,get,incr,lpush -n 200000 -c 50 -P 16 -q
